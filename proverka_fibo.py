@@ -436,12 +436,51 @@ class FiboAnalyzer:
 
         return fibo_values, max_price, min_price, max_idx, min_idx, growth_percent
 
+    def print_fibo_levels_with_margin(self, fibo_values):
+        print("\n=== Уровни Фибоначчи с учетом Разбега ({}%) ===".format(self.percent_margin))
+
+        for level in [0.382, 0.5, 0.618, 0.786]:
+            if level in fibo_values:
+                level_price = fibo_values[level]
+                # Рассчитываем уровень с учетом Разбега для проверки достижения (верхняя граница)
+                margin_for_reach = level_price * (self.percent_margin / 100)
+                level_with_margin_reach = level_price + margin_for_reach
+
+                # Рассчитываем уровень с учетом Разбега для проверки отскока (нижняя граница)
+                margin_for_rebound = level_price * (self.percent_margin / 100)
+                level_with_margin_rebound = level_price - margin_for_rebound
+
+                print(f"Уровень {level}: {level_price}")
+                print(f"  - С учетом Разбега для достижения (верхняя граница): {level_with_margin_reach}")
+                print(f"  - С учетом Разбега для отскока (нижняя граница): {level_with_margin_rebound}")
+
     def is_level_reached(self, price, level_price):
+        """
+        Проверяет, достигла ли цена указанного уровня с учетом разбега
+        price: одиночное значение или серия Pandas
+        """
         if self.percent_margin == 0:
             return price <= level_price
-        margin = level_price * (self.percent_margin / 100)
-        return price <= level_price + margin
 
+        margin = level_price * (self.percent_margin / 100)
+        boundary = level_price + margin
+
+        # Если подается серия, печатать только для отладки
+        if isinstance(price, pd.Series):
+            print(f"Проверка уровня: цена (серия длиной {len(price)}), уровень {level_price}, граница {boundary}")
+            return price <= boundary
+        else:
+            # Для отдельных значений можно печатать подробнее
+            print(f"Проверка уровня: цена {price}, уровень {level_price}, граница {boundary}")
+            return price <= boundary
+
+    def is_level_reached_vectorized(self, prices, level_price):
+        """Векторизованная версия проверки достижения уровня"""
+        if self.percent_margin == 0:
+            return prices <= level_price
+
+        margin = level_price * (self.percent_margin / 100)
+        return prices <= level_price + margin
     def is_rebound_to_level(self, price, level_price):
         if self.percent_margin == 0:
             return price >= level_price
@@ -458,6 +497,8 @@ class FiboAnalyzer:
             if level in fibo_values:
                 print(f"Уровень {level}: {fibo_values[level]}")
 
+        self.print_fibo_levels_with_margin(fibo_values)
+
         # Проверяем, какие триггерные уровни были достигнуты на дневном графике
         reached_levels = {}
         hit_dates = {}  # Словарь для хранения дат первого касания уровней
@@ -471,11 +512,20 @@ class FiboAnalyzer:
                 first_hit_date = hit_frames.iloc[0]['date']
                 hit_dates[level] = first_hit_date
                 print(f"Уровень {level} ({level_price}) достигнут на дневном графике {first_hit_date}")
+                # Добавьте эти строки
+                margin = level_price * (self.percent_margin / 100)
+                level_with_margin = level_price + margin
+                print(f"  - С учетом Разбега ({self.percent_margin}%): до {level_with_margin}")
             else:
                 reached_levels[level] = False
                 print(f"Уровень {level} ({level_price}) не достигнут на дневном графике")
+                # Добавьте эти строки
+                margin = level_price * (self.percent_margin / 100)
+                level_with_margin = level_price + margin
+                print(f"  - С учетом Разбега ({self.percent_margin}%): до {level_with_margin}")
 
-        # Проверяем стоп-лосс на дневном графике
+
+# Проверяем стоп-лосс на дневном графике
         stop_loss_triggered = any(df_after_max['low'] <= fibo_values[0] + (fibo_values[0.236] - fibo_values[0]) * 0.1)
 
         # Анализируем отскоки на часовом графике
@@ -504,8 +554,14 @@ class FiboAnalyzer:
                     continue
 
                 # Находим первое касание уровня на часовом графике
+                level_price = fibo_values[level]  # Получаем цену текущего уровня
                 hourly_hit_frames = hourly_df[self.is_level_reached_vectorized(hourly_df['low'], level_price)]
-
+                if not hourly_hit_frames.empty:
+                    first_hourly_hit = hourly_hit_frames.iloc[0]
+                    print(f"Первое касание уровня {level} ({level_price}) на часовом графике: {first_hourly_hit['date']}")
+                    print(f"Цена касания: {first_hourly_hit['low']}")
+                    print(f"Разница: {abs(level_price - first_hourly_hit['low']) / level_price * 100:.4f}%")
+                    print(f"Макс. допустимая разница (Разбег): {self.percent_margin}%")
                 if hourly_hit_frames.empty:
                     print(f"На часовом графике не найдено касание уровня {level}")
                     rebounds[level] = False
@@ -524,7 +580,9 @@ class FiboAnalyzer:
                 if not hourly_rebound_frames.empty:
                     rebound_date = hourly_rebound_frames.iloc[0]['date']
                     print(f"Найден отскок к уровню {target_level} ({target_price}) на часовом графике: {rebound_date}")
-
+                    margin = target_price * (self.percent_margin / 100)
+                    target_with_margin = target_price - margin
+                    print(f"  - С учетом Разбега ({self.percent_margin}%): от {target_with_margin}")
                     # Проверяем, не является ли отскок частью того же движения
                     # Должно пройти минимум 3 часа между касанием и отскоком
                     time_diff = (rebound_date - first_hourly_hit_date).total_seconds() / 3600
@@ -556,7 +614,9 @@ class FiboAnalyzer:
         """Векторизованная версия проверки достижения уровня"""
         if self.percent_margin == 0:
             return prices <= level_price
+
         margin = level_price * (self.percent_margin / 100)
+        # Проверяем, что цена не более чем на margin выше уровня
         return prices <= level_price + margin
 
     def is_rebound_to_level_vectorized(self, prices, level_price):
