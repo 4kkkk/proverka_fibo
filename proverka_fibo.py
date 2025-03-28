@@ -599,7 +599,7 @@ class FiboAnalyzer:
                             # ИСПРАВЛЕНИЕ: Увеличиваем минимальное время между касанием и отскоком до 12 часов
                             # для более надежного подтверждения реакции рынка
                             time_diff = (rebound_date - first_hourly_hit_date).total_seconds() / 3600
-                            min_hours_between_touch_and_rebound = 6  # Увеличено с 3 до 6 часов
+                            min_hours_between_touch_and_rebound = 2  # Увеличено с 3 до 6 часов
 
                             if time_diff < min_hours_between_touch_and_rebound:
                                 print(f"Отскок произошел слишком быстро ({time_diff:.1f} часов) - это не настоящий отскок")
