@@ -1,5 +1,6 @@
 import sys
 import time
+
 import json
 import os
 import numpy as np
@@ -502,6 +503,8 @@ class FiboAnalyzer:
 
         print(f"\nАнализ тренда на дневном графике:")
         print(f"Максимум найден на позиции {max_idx}, дата: {df.iloc[max_idx]['date']}")
+        max_date = df.iloc[max_idx]['date']  # Дата максимума на дневном графике
+
         for level in [0.382, 0.5, 0.618, 0.786]:
             if level in fibo_values:
                 print(f"Уровень {level}: {fibo_values[level]}")
@@ -537,73 +540,112 @@ class FiboAnalyzer:
         # Анализируем отскоки на часовом графике
         rebounds = {}
 
-        for level in self.trigger_levels:
-            if reached_levels[level]:
-                target_level = self.rebound_targets[level]
-                target_price = fibo_values[target_level]
+        # ВАЖНОЕ ИЗМЕНЕНИЕ: получаем часовые данные, начиная с дня максимума
+        # Берем 1-2 дня до максимума для контекста и определения точного времени максимума на часовом графике
+        start_date = max_date - pd.Timedelta(days=2)
+        end_date = min(pd.Timestamp.now(), max_date + pd.Timedelta(days=14))
 
-                # Определяем период для анализа часовых данных
-                hit_date = hit_dates[level]
-                # Начинаем с дня касания на дневном графике для корректного анализа
-                start_date = hit_date.replace(hour=0, minute=0, second=0)
-                # И до текущего времени или максимум 14 дней после касания
-                end_date = min(pd.Timestamp.now(), hit_date + pd.Timedelta(days=14))
+        print(f"\nПолучаем часовые данные с {start_date} по {end_date} для анализа всего движения")
+        hourly_df = self.get_hourly_data(symbol, start_date, end_date)
 
-                print(f"\nПолучаем часовые данные с {start_date} по {end_date} для анализа отскока от уровня {level}")
+        if hourly_df.empty:
+            print(f"Не удалось получить часовые данные для {symbol}")
+            return {
+                'reached_levels': reached_levels,
+                'rebounds': {},
+                'stop_loss_triggered': stop_loss_triggered,
+                'strategy_worked': False
+            }
 
-                # Получаем часовые данные
-                hourly_df = self.get_hourly_data(symbol, start_date, end_date)
+        print(f"Получено {len(hourly_df)} часовых свечей с {hourly_df.iloc[0]['date']} по {hourly_df.iloc[-1]['date']}")
 
-                if hourly_df.empty:
-                    print(f"Не удалось получить часовые данные для {symbol}")
-                    rebounds[level] = False
-                    continue
+        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: находим точное время максимума на часовом графике
+        # Ищем среди часовых свечей в день максимума и соседние дни
+        max_day_hourly = hourly_df[
+            (hourly_df['date'].dt.date >= (max_date.date() - timedelta(days=1))) &
+            (hourly_df['date'].dt.date <= (max_date.date() + timedelta(days=1)))
+            ]
 
-                print(f"Получено {len(hourly_df)} часовых свечей с {hourly_df.iloc[0]['date']} по {hourly_df.iloc[-1]['date']}")
+        if not max_day_hourly.empty:
+            hourly_max_idx = max_day_hourly['high'].idxmax()
+            hourly_max_date = max_day_hourly.loc[hourly_max_idx, 'date']
+            hourly_max_price = max_day_hourly.loc[hourly_max_idx, 'high']
 
-                # Проверка согласованности с дневным графиком
-                daily_hit_date = hit_dates[level]  # Дата касания на дневном графике
-                # Ищем соответствующие часовые свечи в день касания на дневном графике
-                daily_hit_hourly = hourly_df[hourly_df['date'].dt.date == daily_hit_date.date()]
+            print(f"\nМаксимум на часовом графике найден: {hourly_max_date}, цена: {hourly_max_price}")
 
-                if not daily_hit_hourly.empty:
-                    print(f"Найдено {len(daily_hit_hourly)} часовых свечей для дня касания на дневном графике ({daily_hit_date.date()})")
+            # Теперь анализируем только данные ПОСЛЕ часового максимума
+            hourly_df_after_max = hourly_df[hourly_df['date'] > hourly_max_date]
 
-                    # ИСПРАВЛЕНИЕ: Ищем первое касание только среди свечей дня касания на дневном графике
+            if hourly_df_after_max.empty:
+                print("Нет данных после часового максимума")
+                return {
+                    'reached_levels': reached_levels,
+                    'rebounds': {},
+                    'stop_loss_triggered': stop_loss_triggered,
+                    'strategy_worked': False
+                }
+
+            print(f"Анализируем {len(hourly_df_after_max)} часовых свечей после максимума")
+
+            # Проверяем достижение уровней и отскоки
+            for level in self.trigger_levels:
+                if reached_levels[level]:
                     level_price = fibo_values[level]
-                    hourly_hit_frames = daily_hit_hourly[self.is_level_reached_vectorized(daily_hit_hourly['low'], level_price)]
+                    target_level = self.rebound_targets[level]
+                    target_price = fibo_values[target_level]
+
+                    # Ищем касание уровня ТОЛЬКО после часового максимума
+                    hourly_hit_frames = hourly_df_after_max[
+                        self.is_level_reached_vectorized(hourly_df_after_max['low'], level_price)
+                    ]
 
                     if not hourly_hit_frames.empty:
                         first_hourly_hit = hourly_hit_frames.iloc[0]
                         first_hourly_hit_date = first_hourly_hit['date']
-                        print(f"Первое касание уровня {level} ({level_price}) на часовом графике в день дневного касания: {first_hourly_hit_date}")
+
+                        print(f"\nПервое касание уровня {level} ({level_price}) на часовом графике после максимума: {first_hourly_hit_date}")
                         print(f"Цена касания: {first_hourly_hit['low']}")
                         print(f"Разница между ценой и уровнем: {abs(level_price - first_hourly_hit['low']) / level_price * 100:.4f}%")
                         print(f"Верхняя граница для входа (уровень + разбег {self.percent_margin}%): {level_price + level_price * (self.percent_margin / 100)}")
 
-                        # Выбираем данные после первого касания на часовом графике
-                        hourly_after_hit = hourly_df[hourly_df['date'] > first_hourly_hit_date]
+                        # Время от максимума до касания уровня
+                        time_to_hit = (first_hourly_hit_date - hourly_max_date).total_seconds() / 3600
+                        print(f"Время от максимума до касания уровня: {time_to_hit:.1f} часов")
+
+                        # Выбираем данные после первого касания уровня
+                        hourly_after_hit = hourly_df_after_max[hourly_df_after_max['date'] > first_hourly_hit_date]
 
                         # Анализируем отскок к целевому уровню
-                        hourly_rebound_frames = hourly_after_hit[self.is_rebound_to_level_vectorized(hourly_after_hit['high'], target_price)]
+                        hourly_rebound_frames = hourly_after_hit[
+                            self.is_rebound_to_level_vectorized(hourly_after_hit['high'], target_price)
+                        ]
 
                         if not hourly_rebound_frames.empty:
                             rebound_date = hourly_rebound_frames.iloc[0]['date']
                             rebound_price = hourly_rebound_frames.iloc[0]['high']
+
                             print(f"Найден отскок к уровню {target_level} ({target_price}) на часовом графике: {rebound_date}")
                             margin = target_price * (self.percent_margin / 100)
                             target_with_margin = target_price - margin
                             print(f"  - С учетом Разбега ({self.percent_margin}%): от {target_with_margin}")
                             print(f"  - Цена отскока: {rebound_price}")
 
-                            # ИСПРАВЛЕНИЕ: Увеличиваем минимальное время между касанием и отскоком до 12 часов
-                            # для более надежного подтверждения реакции рынка
+                            # Время между касанием и отскоком
                             time_diff = (rebound_date - first_hourly_hit_date).total_seconds() / 3600
-                            min_hours_between_touch_and_rebound = 2  # Увеличено с 3 до 6 часов
+                            print(f"Время между касанием и отскоком: {time_diff:.1f} часов")
+
+                            # ИЗМЕНЕНИЕ: более гибкие правила для времени отскока
+                            # Для быстрых движений (когда от максимума до касания уровня меньше 12 часов)
+                            # применяем более короткий минимальный интервал
+                            if time_to_hit < 12:
+                                min_hours_between_touch_and_rebound = 1  # Короткий интервал для быстрых движений
+                                print(f"Быстрое движение от максимума до уровня. Минимальное время отскока: {min_hours_between_touch_and_rebound} часов")
+                            else:
+                                min_hours_between_touch_and_rebound = 1  # Стандартный интервал
+                                print(f"Стандартное движение. Минимальное время отскока: {min_hours_between_touch_and_rebound} часов")
 
                             if time_diff < min_hours_between_touch_and_rebound:
-                                print(f"Отскок произошел слишком быстро ({time_diff:.1f} часов) - это не настоящий отскок")
-                                print(f"Требуется минимум {min_hours_between_touch_and_rebound} часов для подтверждения")
+                                print(f"Отскок произошел слишком быстро ({time_diff:.1f} часов) - не настоящий отскок")
                                 rebounds[level] = False
                             else:
                                 print(f"Подтвержденный отскок через {time_diff:.1f} часов")
@@ -612,45 +654,18 @@ class FiboAnalyzer:
                             print(f"Отскок к уровню {target_level} не найден на часовом графике")
                             rebounds[level] = False
                     else:
-                        print(f"В день дневного касания ({daily_hit_date.date()}) не найдено касание уровня {level} на часовом графике")
-
-                        # Если в день дневного касания нет часового касания,
-                        # попробуем поискать его в следующие дни (но не ранее дня дневного касания)
-                        future_hourly_df = hourly_df[hourly_df['date'].dt.date >= daily_hit_date.date()]
-                        future_hit_frames = future_hourly_df[self.is_level_reached_vectorized(future_hourly_df['low'], level_price)]
-
-                        if not future_hit_frames.empty:
-                            first_future_hit = future_hit_frames.iloc[0]
-                            print(f"Найдено первое касание уровня {level} после дневного касания: {first_future_hit['date']}")
-
-                            # Продолжаем анализ отскока от этой точки
-                            first_hourly_hit_date = first_future_hit['date']
-                            hourly_after_hit = hourly_df[hourly_df['date'] > first_hourly_hit_date]
-                            hourly_rebound_frames = hourly_after_hit[self.is_rebound_to_level_vectorized(hourly_after_hit['high'], target_price)]
-
-                            if not hourly_rebound_frames.empty:
-                                # Аналогичная логика анализа отскока
-                                rebound_date = hourly_rebound_frames.iloc[0]['date']
-                                time_diff = (rebound_date - first_hourly_hit_date).total_seconds() / 3600
-                                min_hours_between_touch_and_rebound = 6
-
-                                if time_diff < min_hours_between_touch_and_rebound:
-                                    print(f"Отскок произошел слишком быстро ({time_diff:.1f} часов) - это не настоящий отскок")
-                                    rebounds[level] = False
-                                else:
-                                    print(f"Подтвержденный отскок через {time_diff:.1f} часов")
-                                    rebounds[level] = True
-                            else:
-                                print(f"Отскок к уровню {target_level} не найден на часовом графике")
-                                rebounds[level] = False
-                        else:
-                            print(f"Касание уровня {level} не найдено на часовом графике даже после дня дневного касания")
-                            rebounds[level] = False
+                        print(f"Касание уровня {level} не найдено на часовом графике после максимума")
+                        rebounds[level] = False
                 else:
-                    print(f"Не найдено часовых свечей для дня касания на дневном графике ({daily_hit_date.date()})")
                     rebounds[level] = False
-            else:
-                rebounds[level] = False
+        else:
+            print("Не удалось найти максимум на часовом графике")
+            return {
+                'reached_levels': reached_levels,
+                'rebounds': {},
+                'stop_loss_triggered': stop_loss_triggered,
+                'strategy_worked': False
+            }
 
         # Стратегия отработала, если хотя бы один уровень достиг отскока
         strategy_worked = any(rebounds.values())
@@ -661,6 +676,7 @@ class FiboAnalyzer:
             'stop_loss_triggered': stop_loss_triggered,
             'strategy_worked': strategy_worked
         }
+
 
     # Вспомогательные методы для векторизованного анализа
     def is_level_reached_vectorized(self, prices, level_price):
@@ -694,17 +710,17 @@ def parse_coin_file(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        coins_section = re.search(r'Монеты, которые выросли.*?:(.*?)(?:$|\n\n)', content, re.DOTALL)
-        if not coins_section:
-            return []
+        # Паттерн для поиска любой монеты с суффиксом USDT
+        coin_pattern = r'([A-Za-z0-9]+USDT): ([\d\.\-]+)%'
+        coins = re.findall(coin_pattern, content)
 
-        coins_text = coins_section.group(1)
+        print(f"Найдено {len(coins)} монет в файле")
 
-        # Обновленный паттерн для формата "10000000AIDOGEUSDT: 43.06% (Возраст: 386 дней)"
-        coin_pattern = r'(\w+USDT): ([\d\.]+)%'
-        coins = re.findall(coin_pattern, coins_text)
+        # Удаляем дубликаты и возвращаем только названия монет
+        unique_coins = list(set([coin[0] for coin in coins]))
+        print(f"Уникальных монет: {len(unique_coins)}")
 
-        return [coin[0] for coin in coins]
+        return unique_coins
     except Exception as e:
         print(f"Ошибка при парсинге файла: {str(e)}")
         return []
