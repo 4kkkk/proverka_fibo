@@ -493,10 +493,17 @@ class FiboAnalyzer:
 
         margin = target_price * (self.percent_margin / 100)
         # Для выхода: цена должна быть >= целевой уровень - разбег
-        return prices >= target_price - margin
-        print(f"Цена касания: {price_value}")
-        print(f"Уровень 0.618: {level_price}")
-        print(f"Верхняя граница для входа: {level_price + level_price * (self.percent_margin / 100)}")
+        result = prices >= target_price - margin
+
+        # Добавляем отладочную информацию (если нужно)
+        if isinstance(prices, pd.Series) and len(prices) > 0:
+            price_value = prices.iloc[0]  # Берем первое значение для примера
+            print(f"Цена касания: {price_value}")
+            print(f"Уровень: {target_price}")
+            print(f"Верхняя граница для входа: {target_price - margin}")
+
+        return result
+
     def analyze_strategy(self, df, fibo_values, max_idx, symbol):
         """Анализирует стратегию с использованием гибридного подхода дневных и часовых графиков"""
         df_after_max = df.iloc[max_idx:]
@@ -678,22 +685,7 @@ class FiboAnalyzer:
         }
 
 
-    # Вспомогательные методы для векторизованного анализа
-    def is_level_reached_vectorized(self, prices, level_price):
-        """Векторизованная версия проверки достижения уровня"""
-        if self.percent_margin == 0:
-            return prices <= level_price
 
-        margin = level_price * (self.percent_margin / 100)
-        # Проверяем, что цена не более чем на margin выше уровня
-        return prices <= level_price + margin
-
-    def is_rebound_to_level_vectorized(self, prices, level_price):
-        """Векторизованная версия проверки отскока"""
-        if self.percent_margin == 0:
-            return prices >= level_price
-        margin = level_price * (self.percent_margin / 100)
-        return prices >= level_price - margin
 
 def get_price_precision(price):
     if price == 0:
@@ -821,8 +813,8 @@ class AnalysisWorker(QThread):
             print(f"Критическая ошибка: {str(e)}")
             print(traceback.format_exc())
 
-def stop(self):
-    self.stop_flag = True
+    def stop(self):
+        self.stop_flag = True
 
 
 class MainWindow(QMainWindow):
